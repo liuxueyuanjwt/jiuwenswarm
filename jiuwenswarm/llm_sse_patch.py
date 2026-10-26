@@ -70,31 +70,32 @@ def assemble_openai_response(response: str) -> Any:
 
     content = think_content = ""
     last_chunk = None
-    cache_chunk = ""
+    data_value = ""
 
-    for line in response.split("\n"):
-        if not line.strip():
-            continue
-        if line.startswith("id:"):
-            if cache_chunk:
-                chunk = _parse_chunk(cache_chunk)
-                cache_chunk = ""
-                if chunk:
-                    think, out = _extract_message_content(chunk)
-                    think_content += think
-                    content += out
-                    last_chunk = chunk
-        elif line.startswith("data:"):
-            cache_chunk = line
-
-    # 处理最后一个 chunk
-    if cache_chunk:
-        chunk = _parse_chunk(cache_chunk)
+    def _flush():
+        nonlocal content, think_content, last_chunk
+        if not data_value:
+            return
+        chunk = _parse_chunk("data:" + data_value)
         if chunk:
             think, out = _extract_message_content(chunk)
             think_content += think
             content += out
             last_chunk = chunk
+
+    for line in response.split("\n"):
+        if line.strip() == "":
+            # blank line terminates the current SSE event
+            _flush()
+            data_value = ""
+            continue
+        if line.startswith("data:"):
+            piece = line[len("data:"):]
+            # SSE joins consecutive data: lines of one event with "\n"
+            data_value = data_value + "\n" + piece if data_value else piece
+
+    # flush a trailing event that has no final blank line
+    _flush()
 
     # 提取并构建工具调用对象
     formatted_tool_calls = None
