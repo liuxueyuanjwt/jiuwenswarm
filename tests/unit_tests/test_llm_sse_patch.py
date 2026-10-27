@@ -76,12 +76,36 @@ def test_trailing_event_without_final_blank_line_is_flushed():
     assert result.choices[0].message.content == "Tail"
 
 
-def test_non_spec_stream_emits_warning_on_fallback(caplog):
-    sse = (
-        'data: {"choices":[{"message":{"token_text":"Hello"}}]}\n'
-        'data: {"choices":[{"message":{"token_text":"World"}}]}\n\n'
-    )
-    with caplog.at_level(logging.WARNING, logger="jiuwenswarm.llm_sse_patch"):
+def test_non_spec_stream_emits_warning_on_fallback():
+    """Non-spec streams that join events with a single newline must fall back
+    to per-line parsing AND emit a warning.
+
+    The warning is captured from the source logger directly instead of via
+    pytest's ``caplog``: the project's logging configuration does not always
+    propagate ``jiuwenswarm.*`` records to the root logger (handlers are
+    attached per-logger with ``propagate=False``), which would make a
+    root-based ``caplog`` capture miss the record even though it was emitted.
+    """
+    logger = logging.getLogger("jiuwenswarm.llm_sse_patch")
+    captured: list[str] = []
+
+    class _WarnRecorder(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record.getMessage())
+
+    handler = _WarnRecorder()
+    handler.setLevel(logging.WARNING)
+    prev_propagate = logger.propagate
+    logger.addHandler(handler)
+    try:
+        sse = (
+            'data: {"choices":[{"message":{"token_text":"Hello"}}]}\n'
+            'data: {"choices":[{"message":{"token_text":"World"}}]}\n\n'
+        )
         result = assemble_openai_response(sse)
+    finally:
+        logger.removeHandler(handler)
+        logger.propagate = prev_propagate
+
     assert result.choices[0].message.content == "HelloWorld"
-    assert any("回退逐行解析" in rec.message for rec in caplog.records)
+    assert any("回退逐行解析" in msg for msg in captured), captured
