@@ -82,6 +82,24 @@ def assemble_openai_response(response: str) -> Any:
             think_content += think
             content += out
             last_chunk = chunk
+            return
+        # 整段解析失败：退回逐行解析。兼容以单换行（而非空行）分隔事件、
+        # 或将多个完整 JSON 作为同一事件多行 data 下发的非规范 SSE 流，
+        # 避免从"截断"退化成"整段空内容"且无日志提示。
+        logger.warning(
+            "[llm_sse_patch] SSE 事件整段 JSON 解析失败，回退逐行解析: %.200s",
+            data_value,
+        )
+        for sub in data_value.split("\n"):
+            sub = sub.rstrip("\r").strip()
+            if not sub:
+                continue
+            sub_chunk = _parse_chunk("data:" + sub)
+            if sub_chunk:
+                think, out = _extract_message_content(sub_chunk)
+                think_content += think
+                content += out
+                last_chunk = sub_chunk
 
     for line in response.split("\n"):
         if line.strip() == "":
@@ -91,7 +109,12 @@ def assemble_openai_response(response: str) -> Any:
             continue
         if line.startswith("data:"):
             piece = line[len("data:"):]
-            # SSE joins consecutive data: lines of one event with "\n"
+            # SSE 规范：冒号后可带一个前导空格（属于分帧），需剔除；
+            # 同时剔除 CRLF 行尾残留的 "\r"，避免多行 data 拼接时污染文本。
+            if piece.startswith(" "):
+                piece = piece[1:]
+            piece = piece.rstrip("\r")
+            # 同一事件的连续 data: 行按 SSE 规范以 "\n" 拼接累积
             data_value = data_value + "\n" + piece if data_value else piece
 
     # flush a trailing event that has no final blank line
